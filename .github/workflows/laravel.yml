@@ -1,34 +1,47 @@
-name: Laravel CI/CD
+name: Deploy Laravel to EC2
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
   deploy:
-    name: 🚀 Deploy Laravel to EC2
+    name: Deploy on EC2
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📦 Checkout Code
-        uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-      - name: 🔐 Add SSH Key
-        run: |
-          echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
-          chmod 600 ec2_key.pem
+    - name: Set up SSH key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-      - name: 🚀 SSH into EC2 and Deploy
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            cd ${{ secrets.DEPLOY_PATH }}
-            git pull origin main
-            composer install --no-interaction --prefer-dist --optimize-autoloader
-            php artisan migrate --force
-            php artisan config:cache
-            php artisan route:cache
-            php artisan view:cache
-            sudo systemctl reload php8.2-fpm || true
-            sudo systemctl restart nginx || true
-          EOF
+    - name: Deploy Laravel App
+      run: |
+        ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+          cd /var/www/laravel-app
+
+          # Pull latest changes
+          git pull origin main
+
+          # Install dependencies
+          composer install --no-dev --optimize-autoloader
+
+          # Run Laravel setup
+          php artisan migrate --force
+          php artisan config:cache
+          php artisan route:cache
+          php artisan view:cache
+          
+          # Adjust permissions
+          chown -R www-data:www-data .
+          chmod -R 775 storage bootstrap/cache
+          
+          # (Optional) Restart queue workers or services
+          sudo systemctl reload php8.1-fpm
+          sudo systemctl restart nginx
+        EOF
