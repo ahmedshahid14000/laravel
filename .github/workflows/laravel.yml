@@ -1,47 +1,57 @@
-name: Deploy Laravel to EC2
+name: Deploy Laravel App to EC2
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   deploy:
-    name: Deploy on EC2
+    name: Deploy to EC2
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Set up SSH key
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, bcmath, xml, curl, mysql
+          ini-values: post_max_size=256M, upload_max_filesize=256M
 
-    - name: Deploy Laravel App
-      run: |
-        ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-          cd /var/www/laravel-app
+      - name: Install Composer Dependencies
+        run: composer install --no-dev --optimize-autoloader
 
-          # Pull latest changes
-          git pull origin main
-
-          # Install dependencies
-          composer install --no-dev --optimize-autoloader
-
-          # Run Laravel setup
-          php artisan migrate --force
+      - name: Run Laravel Optimizations
+        run: |
           php artisan config:cache
           php artisan route:cache
           php artisan view:cache
-          
-          # Adjust permissions
-          chown -R www-data:www-data .
-          chmod -R 775 storage bootstrap/cache
-          
-          # (Optional) Restart queue workers or services
-          sudo systemctl reload php8.1-fpm
-          sudo systemctl restart nginx
-        EOF
+
+      - name: Copy project to EC2 via SSH
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "."
+          target: "/var/www/laravel-app"
+
+      - name: SSH into EC2 and set permissions + reload services
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /var/www/laravel-app
+            composer install --no-dev --optimize-autoloader
+            php artisan migrate --force
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+            sudo chown -R www-data:www-data .
+            sudo systemctl reload php8.2-fpm
+            sudo systemctl reload nginx
