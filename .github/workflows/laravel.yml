@@ -1,57 +1,61 @@
+# .github/workflows/deploy.yml
+
 name: Deploy Laravel App to EC2
 
 on:
   push:
     branches:
-      - main
+      - main  # Change if using a different branch
 
 jobs:
   deploy:
-    name: Deploy to EC2
+    name: Upload & Deploy Laravel
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Checkout Code
+      uses: actions/checkout@v3
 
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.2'
-          extensions: mbstring, bcmath, xml, curl, mysql
-          ini-values: post_max_size=256M, upload_max_filesize=256M
+    - name: Setup SSH Key
+      run: |
+        echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
+        chmod 400 ec2_key.pem
 
-      - name: Install Composer Dependencies
-        run: composer install --no-dev --optimize-autoloader
+    - name: Ensure /var/www exists on EC2
+      run: |
+        ssh -o StrictHostKeyChecking=no -i ec2_key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+          sudo mkdir -p /var/www
+          sudo chown $USER:$USER /var/www
+EOF
 
-      - name: Run Laravel Optimizations
-        run: |
+    - name: Upload Laravel App to EC2
+      run: |
+        rsync -avz --delete \
+          --exclude='.git' \
+          --exclude='node_modules' \
+          --exclude='vendor' \
+          -e "ssh -o StrictHostKeyChecking=no -i ec2_key.pem" \
+          ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/var/www/laravel-app
+
+    - name: Run Laravel Setup on EC2
+      run: |
+        ssh -o StrictHostKeyChecking=no -i ec2_key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+          cd /var/www/laravel-app
+
+          # Install PHP dependencies
+          composer install --no-interaction --prefer-dist --optimize-autoloader
+
+          # Laravel setup
+          if [ ! -f ".env" ]; then
+            cp .env.example .env
+          fi
+          php artisan key:generate
+          php artisan migrate --force
           php artisan config:cache
           php artisan route:cache
           php artisan view:cache
 
-      - name: Copy project to EC2 via SSH
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          source: "."
-          target: "/var/www/laravel-app"
-
-      - name: SSH into EC2 and set permissions + reload services
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd /var/www/laravel-app
-            composer install --no-dev --optimize-autoloader
-            php artisan migrate --force
-            php artisan config:cache
-            php artisan route:cache
-            php artisan view:cache
-            sudo chown -R www-data:www-data .
-            sudo systemctl reload php8.2-fpm
-            sudo systemctl reload nginx
+          # Set permissions
+          sudo chown -R www-data:www-data /var/www/laravel-app
+          sudo chmod -R 775 storage bootstrap/cache
+EOF
